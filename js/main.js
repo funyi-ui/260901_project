@@ -112,18 +112,109 @@
     });
   });
 
+  const AUTH_API_URL = 'https://script.google.com/macros/s/AKfycbytgEju-zZBoa_wh0MZJR1EJUaAHWNtL79dQOAS_SwNf41V9DnieLFiLSbqkKNdoQ0unw/exec';
+  const TOKEN_KEY = 'haneul-auth-token';
+
+  const authRequest = async (payload) => {
+    const response = await fetch(AUTH_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) throw new Error('인증 서버에 연결할 수 없습니다.');
+    return response.json();
+  };
+
+  const getAuthToken = () => (
+    sessionStorage.getItem(TOKEN_KEY)
+    || localStorage.getItem(TOKEN_KEY)
+  );
+
+  const saveAuthToken = (token, remember) => {
+    sessionStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(TOKEN_KEY);
+    const storage = remember ? localStorage : sessionStorage;
+    storage.setItem(TOKEN_KEY, token);
+  };
+
   document.querySelectorAll('[data-auth-form]').forEach((form) => {
-    form.addEventListener('submit', (event) => {
+    form.addEventListener('submit', async (event) => {
       event.preventDefault();
       const message = form.querySelector('.form-message');
+      const submitButton = form.querySelector('[type="submit"]');
+
       if (!form.checkValidity()) {
         form.reportValidity();
         if (message) message.textContent = '입력한 정보를 다시 확인해 주세요.';
         return;
       }
-      if (message) message.textContent = '확인되었습니다. 이 화면은 프론트엔드 데모입니다.';
+
+      const fields = new FormData(form);
+      const isSignup = Boolean(form.querySelector('[name="name"]'));
+      const remember = fields.get('remember') === 'on';
+      const payload = {
+        action: isSignup ? 'signup' : 'login',
+        email: fields.get('email'),
+        password: fields.get('password')
+      };
+      if (isSignup) payload.name = fields.get('name');
+      else payload.remember = remember;
+
+      if (submitButton) submitButton.disabled = true;
+      if (message) message.textContent = '처리 중입니다...';
+
+      try {
+        const result = await authRequest(payload);
+        if (!result.ok) throw new Error(result.message);
+
+        if (message) message.textContent = result.message;
+        if (isSignup) {
+          window.setTimeout(() => {
+            window.location.href = 'login.html?registered=1';
+          }, 700);
+        } else {
+          saveAuthToken(result.token, remember);
+          window.setTimeout(() => {
+            window.location.href = 'index.html';
+          }, 500);
+        }
+      } catch (error) {
+        if (message) {
+          message.textContent = error.message || '요청 처리에 실패했습니다.';
+        }
+        if (submitButton) submitButton.disabled = false;
+      }
     });
   });
+
+  const registered = new URLSearchParams(window.location.search)
+    .get('registered');
+  if (registered === '1') {
+    const loginMessage = document.querySelector(
+      '.auth-form .form-message'
+    );
+    if (loginMessage) {
+      loginMessage.textContent = '회원가입이 완료되었습니다. 로그인해 주세요.';
+    }
+  }
+
+  const refreshAuthUI = async () => {
+    const token = getAuthToken();
+    const loginLink = document.querySelector('.login-link');
+    if (!token || !loginLink) return;
+
+    try {
+      const result = await authRequest({ action: 'session', token });
+      if (!result.ok) throw new Error(result.message);
+      loginLink.textContent = result.user.name + '님';
+      loginLink.href = 'profile.html';
+    } catch {
+      sessionStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(TOKEN_KEY);
+    }
+  };
+
+  refreshAuthUI();
 
   document.querySelectorAll('.password-toggle').forEach((button) => {
     button.addEventListener('click', () => {
