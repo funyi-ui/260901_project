@@ -74,4 +74,150 @@
   });
 
   if (year) year.textContent = new Date().getFullYear();
+
+  // Blog post search and category filtering
+  const searchInput = document.querySelector('#post-search');
+  const filterButtons = [...document.querySelectorAll('[data-filter]')];
+  const postCards = [...document.querySelectorAll('.post-card')];
+  const emptyState = document.querySelector('#empty-state');
+  let activeFilter = 'all';
+
+  const filterPosts = () => {
+    const query = searchInput?.value.trim().toLocaleLowerCase('ko') || '';
+    let visibleCount = 0;
+    postCards.forEach((card) => {
+      const matchesCategory = activeFilter === 'all' || card.dataset.category === activeFilter;
+      const matchesQuery = card.textContent.toLocaleLowerCase('ko').includes(query);
+      card.hidden = !(matchesCategory && matchesQuery);
+      if (!card.hidden) visibleCount += 1;
+    });
+    if (emptyState) emptyState.hidden = visibleCount !== 0;
+  };
+
+  searchInput?.addEventListener('input', filterPosts);
+  filterButtons.forEach((button) => button.addEventListener('click', () => {
+    activeFilter = button.dataset.filter;
+    filterButtons.forEach((item) => item.classList.toggle('active', item === button));
+    filterPosts();
+  }));
+
+  // Prototype forms: validate in the browser and show completion feedback.
+  document.querySelectorAll('[data-demo-form]').forEach((form) => {
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      if (!form.reportValidity()) return;
+      const message = form.querySelector('.form-message');
+      if (message) message.textContent = '구독 신청이 완료되었습니다. 감사합니다!';
+      form.reset();
+    });
+  });
+
+  document.querySelectorAll('[data-auth-form]').forEach((form) => {
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const message = form.querySelector('.form-message');
+      if (!form.checkValidity()) {
+        form.reportValidity();
+        if (message) message.textContent = '입력한 정보를 다시 확인해 주세요.';
+        return;
+      }
+      if (message) message.textContent = '확인되었습니다. 이 화면은 프론트엔드 데모입니다.';
+    });
+  });
+
+  document.querySelectorAll('.password-toggle').forEach((button) => {
+    button.addEventListener('click', () => {
+      const input = button.parentElement.querySelector('input');
+      const show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      button.textContent = show ? '숨기기' : '보기';
+    });
+  });
+
+  const shareButton = document.querySelector('.share-button');
+  shareButton?.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      shareButton.textContent = '복사됨 ✓';
+    } catch {
+      shareButton.textContent = '주소창의 링크를 복사해 주세요';
+    }
+  });
+
+  // Writing screen interactions
+  const editorMain = document.querySelector('.editor-main');
+  const editorTitle = document.querySelector('#editor-title');
+  const editorContent = document.querySelector('#editor-content');
+  const editorTags = document.querySelector('#editor-tags');
+  const titleCount = document.querySelector('#title-count');
+  const draftStatus = document.querySelector('.draft-status');
+  const publishPanel = document.querySelector('.publish-panel');
+  const preview = document.querySelector('.editor-preview');
+  const editorPane = document.querySelector('.editor-pane');
+
+  const updateTitle = () => {
+    if (titleCount && editorTitle) titleCount.textContent = editorTitle.value.length;
+  };
+  editorTitle?.addEventListener('input', updateTitle);
+
+  const setDraftMessage = (text) => {
+    if (draftStatus) draftStatus.textContent = text;
+  };
+  document.querySelector('.save-draft')?.addEventListener('click', () => {
+    localStorage.setItem('haneul-blog-draft', JSON.stringify({
+      title: editorTitle?.value || '', content: editorContent?.value || '', tags: editorTags?.value || ''
+    }));
+    setDraftMessage('방금 저장됨');
+  });
+
+  if (editorTitle) {
+    try {
+      const draft = JSON.parse(localStorage.getItem('haneul-blog-draft'));
+      if (draft) {
+        editorTitle.value = draft.title || '';
+        editorContent.value = draft.content || '';
+        editorTags.value = draft.tags || '';
+        setDraftMessage('임시저장 글');
+        updateTitle();
+      }
+    } catch { localStorage.removeItem('haneul-blog-draft'); }
+  }
+
+  document.querySelectorAll('.editor-toolbar [data-format]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (!editorContent) return;
+      const marks = { h2: '## ', bold: '**굵은 글씨**', italic: '*기울임*', quote: '> ', list: '- ', link: '[링크 이름](https://)', image: '![이미지 설명](이미지 주소)' };
+      const text = marks[button.dataset.format] || '';
+      const start = editorContent.selectionStart;
+      editorContent.setRangeText(text, start, editorContent.selectionEnd, 'end');
+      editorContent.focus();
+    });
+  });
+
+  document.querySelector('.preview-toggle')?.addEventListener('click', (event) => {
+    const showing = !preview.hidden;
+    preview.hidden = showing;
+    editorPane.hidden = !showing;
+    if (!showing) {
+      preview.querySelector('h1').textContent = editorTitle.value || '제목을 입력하세요';
+      preview.querySelector('.preview-body').textContent = editorContent.value || '내용을 입력하면 이곳에서 미리 볼 수 있습니다.';
+    }
+    event.currentTarget.textContent = showing ? '미리보기' : '편집하기';
+  });
+
+  const togglePublishPanel = (open) => {
+    publishPanel?.classList.toggle('open', open);
+    editorMain?.classList.toggle('panel-visible', open);
+  };
+  document.querySelector('.publish-button')?.addEventListener('click', () => togglePublishPanel(true));
+  document.querySelector('.panel-close')?.addEventListener('click', () => togglePublishPanel(false));
+  document.querySelector('.publish-final')?.addEventListener('click', () => {
+    if (!editorTitle?.value.trim() || !editorContent?.value.trim()) {
+      setDraftMessage('제목과 내용을 입력해 주세요');
+      togglePublishPanel(false);
+      return;
+    }
+    setDraftMessage('발행 완료 (데모)');
+    togglePublishPanel(false);
+  });
 })();
