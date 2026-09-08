@@ -112,7 +112,7 @@
     });
   });
 
-  const AUTH_API_URL = 'https://script.google.com/macros/s/AKfycbytgEju-zZBoa_wh0MZJR1EJUaAHWNtL79dQOAS_SwNf41V9DnieLFiLSbqkKNdoQ0unw/exec';
+  const AUTH_API_URL = 'https://script.google.com/macros/s/AKfycbwtiglFioGQ8MI2VExRYlS3PMBFtXHbVGGwZlI-Nn-gBdg0Q3o2jC0dTrFMRQ65Hdo5EA/exec';
   const TOKEN_KEY = 'haneul-auth-token';
 
   const authRequest = async (payload) => {
