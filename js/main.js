@@ -137,6 +137,22 @@
     storage.setItem(TOKEN_KEY, token);
   };
 
+  const clearAuthToken = () => {
+    sessionStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(TOKEN_KEY);
+  };
+
+  const showAuthActions = (isLoggedIn) => {
+    const loginLink = document.querySelector('.login-link');
+    const signupLink = document.querySelector('.signup-link');
+    const logoutButton = document.querySelector('.logout-button');
+    const profileLink = document.querySelector('.account-profile-link');
+    if (loginLink) loginLink.hidden = isLoggedIn;
+    if (signupLink) signupLink.hidden = isLoggedIn;
+    if (logoutButton) logoutButton.hidden = !isLoggedIn;
+    if (profileLink) profileLink.hidden = !isLoggedIn;
+  };
+
   document.querySelectorAll('[data-auth-form]').forEach((form) => {
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -174,6 +190,7 @@
           }, 700);
         } else {
           saveAuthToken(result.token, remember);
+          showAuthActions(true);
           window.setTimeout(() => {
             window.location.href = 'index.html';
           }, 500);
@@ -200,21 +217,34 @@
 
   const refreshAuthUI = async () => {
     const token = getAuthToken();
-    const loginLink = document.querySelector('.login-link');
-    if (!token || !loginLink) return;
+    if (!token || !document.querySelector('.header-actions')) return;
 
     try {
       const result = await authRequest({ action: 'session', token });
       if (!result.ok) throw new Error(result.message);
-      loginLink.textContent = result.user.name + '님';
-      loginLink.href = 'profile.html';
+      showAuthActions(true);
     } catch {
-      sessionStorage.removeItem(TOKEN_KEY);
-      localStorage.removeItem(TOKEN_KEY);
+      clearAuthToken();
+      showAuthActions(false);
     }
   };
 
   refreshAuthUI();
+
+  document.querySelector('.logout-button')?.addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    const token = getAuthToken();
+    button.disabled = true;
+    try {
+      if (token) await authRequest({ action: 'logout', token });
+    } catch {
+      // Clear the browser session even if the server cannot be reached.
+    } finally {
+      clearAuthToken();
+      showAuthActions(false);
+      button.disabled = false;
+    }
+  });
 
   document.querySelectorAll('.password-toggle').forEach((button) => {
     button.addEventListener('click', () => {
