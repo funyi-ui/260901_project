@@ -148,15 +148,18 @@
     });
   };
 
+  const savedPosts = loadPosts();
   const postGrid = document.querySelector('#post-grid');
   if (postGrid) {
-    loadPosts().reverse().forEach((post) => {
+    postGrid.replaceChildren();
+    savedPosts.forEach((post) => {
       const card = document.createElement('article');
       card.className = 'post-card';
       card.dataset.category = categoryNames[post.category] ? post.category : 'life';
+      card.dataset.search = `${post.title} ${post.content} ${post.tags || ''}`.toLocaleLowerCase('ko');
       const link = `post-detail.html?id=${encodeURIComponent(post.id)}`;
       const thumbnail = document.createElement('a');
-      thumbnail.className = 'post-thumb coral';
+      thumbnail.className = `post-thumb ${post.category === 'design' ? 'blue' : post.category === 'life' ? 'sand' : 'coral'}`;
       thumbnail.href = link;
       const label = document.createElement('b');
       label.textContent = categoryNames[post.category] || '새 글';
@@ -167,6 +170,7 @@
       category.textContent = categoryNames[post.category] || '일상';
       const date = document.createElement('time');
       date.textContent = new Date(post.updatedAt || post.createdAt).toLocaleDateString('ko-KR');
+      date.dateTime = post.updatedAt || post.createdAt;
       meta.append(category, date);
       const heading = document.createElement('h3');
       const titleLink = document.createElement('a');
@@ -174,16 +178,33 @@
       titleLink.textContent = post.title;
       heading.append(titleLink);
       const excerpt = document.createElement('p');
-      excerpt.textContent = post.content.replace(/[#*>\[\]()]/g, '').slice(0, 90);
+      excerpt.textContent = post.content.replace(/[#*>\[\]()]/g, '').replace(/\s+/g, ' ').trim().slice(0, 90);
       card.append(thumbnail, meta, heading, excerpt);
-      postGrid.prepend(card);
+      postGrid.append(card);
     });
+  }
+
+  const featured = document.querySelector('#featured-post');
+  if (featured && savedPosts.length) {
+    const latest = savedPosts[0];
+    const link = `post-detail.html?id=${encodeURIComponent(latest.id)}`;
+    featured.querySelector('.featured-category').textContent = categoryNames[latest.category] || '일상';
+    const date = featured.querySelector('.featured-date');
+    date.textContent = new Date(latest.updatedAt || latest.createdAt).toLocaleDateString('ko-KR');
+    date.dateTime = latest.updatedAt || latest.createdAt;
+    const title = featured.querySelector('.featured-title');
+    title.textContent = latest.title;
+    title.href = link;
+    featured.querySelector('.featured-excerpt').textContent = latest.content.replace(/[#*>\[\]()]/g, '').replace(/\s+/g, ' ').trim().slice(0, 170);
+    featured.querySelector('.featured-visual').href = link;
+    featured.querySelector('.featured-read').href = link;
+    featured.hidden = false;
   }
 
   const postId = new URLSearchParams(window.location.search).get('id');
   const detailMain = document.querySelector('#main');
-  if (postId && detailMain && window.location.pathname.endsWith('post-detail.html')) {
-    const post = loadPosts().find((entry) => entry.id === postId);
+  if (detailMain && window.location.pathname.endsWith('post-detail.html')) {
+    const post = savedPosts.find((entry) => entry.id === postId);
     if (!post) {
       document.title = '글을 찾을 수 없습니다 | HANEUL.LOG';
       detailMain.innerHTML = '<div class="container saved-post-missing"><h1>글을 찾을 수 없습니다.</h1><a href="index.html">← 모든 글</a></div>';
@@ -284,11 +305,16 @@
     let visibleCount = 0;
     postCards.forEach((card) => {
       const matchesCategory = activeFilter === 'all' || card.dataset.category === activeFilter;
-      const matchesQuery = card.textContent.toLocaleLowerCase('ko').includes(query);
+      const matchesQuery = card.dataset.search.includes(query);
       card.hidden = !(matchesCategory && matchesQuery);
       if (!card.hidden) visibleCount += 1;
     });
-    if (emptyState) emptyState.hidden = visibleCount !== 0;
+    if (emptyState) {
+      emptyState.hidden = visibleCount !== 0;
+      emptyState.textContent = postCards.length
+        ? '검색 결과가 없습니다.'
+        : '아직 작성한 글이 없습니다. 새 글을 작성해 보세요.';
+    }
   };
 
   searchInput?.addEventListener('input', filterPosts);
@@ -297,6 +323,7 @@
     filterButtons.forEach((item) => item.classList.toggle('active', item === button));
     filterPosts();
   }));
+  if (postGrid) filterPosts();
 
   // Prototype forms: validate in the browser and show completion feedback.
   document.querySelectorAll('[data-demo-form]').forEach((form) => {
