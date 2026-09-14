@@ -75,12 +75,151 @@
 
   if (year) year.textContent = new Date().getFullYear();
 
+  const POSTS_KEY = 'haneul-blog-posts';
+  const categoryNames = { development: '개발', design: '디자인', life: '일상' };
+  const loadPosts = () => {
+    try {
+      const posts = JSON.parse(localStorage.getItem(POSTS_KEY) || '[]');
+      return Array.isArray(posts) ? posts.filter((post) =>
+        post && typeof post.id === 'string' && typeof post.title === 'string'
+        && typeof post.content === 'string') : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const renderInline = (parent, source) => {
+    const pattern = /(\*\*[^*]+\*\*|\*[^*]+\*|!?\[[^\]]+\]\(https?:\/\/[^\s)]+\))/g;
+    let position = 0;
+    for (const match of source.matchAll(pattern)) {
+      parent.append(document.createTextNode(source.slice(position, match.index)));
+      const value = match[0];
+      if (value.startsWith('**')) {
+        const strong = document.createElement('strong');
+        strong.textContent = value.slice(2, -2);
+        parent.append(strong);
+      } else if (value.startsWith('*')) {
+        const emphasis = document.createElement('em');
+        emphasis.textContent = value.slice(1, -1);
+        parent.append(emphasis);
+      } else {
+        const image = value.startsWith('!');
+        const opening = image ? 2 : 1;
+        const split = value.indexOf('](');
+        const label = value.slice(opening, split);
+        const url = value.slice(split + 2, -1);
+        const element = document.createElement(image ? 'img' : 'a');
+        if (image) {
+          element.alt = label;
+          element.src = url;
+          element.loading = 'lazy';
+        } else {
+          element.textContent = label;
+          element.href = url;
+          element.target = '_blank';
+          element.rel = 'noopener noreferrer';
+        }
+        parent.append(element);
+      }
+      position = match.index + value.length;
+    }
+    parent.append(document.createTextNode(source.slice(position)));
+  };
+
+  const renderPostBody = (container, content) => {
+    container.replaceChildren();
+    let list = null;
+    content.split(/\r?\n/).forEach((line) => {
+      if (!line.trim()) { list = null; return; }
+      const heading = line.startsWith('## ');
+      const quote = line.startsWith('> ');
+      const item = line.startsWith('- ');
+      if (item) {
+        if (!list) {
+          list = document.createElement('ul');
+          container.append(list);
+        }
+      } else {
+        list = null;
+      }
+      const element = document.createElement(heading ? 'h2' : quote ? 'blockquote' : item ? 'li' : 'p');
+      renderInline(element, line.slice(heading || quote || item ? 2 : 0));
+      (item ? list : container).append(element);
+    });
+  };
+
+  const postGrid = document.querySelector('#post-grid');
+  if (postGrid) {
+    loadPosts().reverse().forEach((post) => {
+      const card = document.createElement('article');
+      card.className = 'post-card';
+      card.dataset.category = categoryNames[post.category] ? post.category : 'life';
+      const link = `post-detail.html?id=${encodeURIComponent(post.id)}`;
+      const thumbnail = document.createElement('a');
+      thumbnail.className = 'post-thumb coral';
+      thumbnail.href = link;
+      const label = document.createElement('b');
+      label.textContent = categoryNames[post.category] || '새 글';
+      thumbnail.append(label);
+      const meta = document.createElement('div');
+      meta.className = 'post-meta';
+      const category = document.createElement('span');
+      category.textContent = categoryNames[post.category] || '일상';
+      const date = document.createElement('time');
+      date.textContent = new Date(post.createdAt).toLocaleDateString('ko-KR');
+      meta.append(category, date);
+      const heading = document.createElement('h3');
+      const titleLink = document.createElement('a');
+      titleLink.href = link;
+      titleLink.textContent = post.title;
+      heading.append(titleLink);
+      const excerpt = document.createElement('p');
+      excerpt.textContent = post.content.replace(/[#*>\[\]()]/g, '').slice(0, 90);
+      card.append(thumbnail, meta, heading, excerpt);
+      postGrid.prepend(card);
+    });
+  }
+
+  const postId = new URLSearchParams(window.location.search).get('id');
+  const detailMain = document.querySelector('#main');
+  if (postId && detailMain && window.location.pathname.endsWith('post-detail.html')) {
+    const post = loadPosts().find((entry) => entry.id === postId);
+    if (!post) {
+      document.title = '글을 찾을 수 없습니다 | HANEUL.LOG';
+      detailMain.innerHTML = '<div class="container saved-post-missing"><h1>글을 찾을 수 없습니다.</h1><a href="index.html">← 모든 글</a></div>';
+    } else {
+      document.title = `${post.title} | HANEUL.LOG`;
+      detailMain.innerHTML = '<article class="saved-post"><header class="article-hero"><div class="article-heading"><a class="back-link" href="index.html">← 모든 글</a><div class="post-meta"><span class="saved-category"></span><time class="saved-date"></time></div><h1 class="saved-title"></h1></div></header><div class="container article-layout"><div class="article-body saved-body"></div></div></article>';
+      detailMain.querySelector('.saved-category').textContent = categoryNames[post.category] || '일상';
+      detailMain.querySelector('.saved-date').textContent = new Date(post.createdAt).toLocaleDateString('ko-KR');
+      detailMain.querySelector('.saved-title').textContent = post.title;
+      renderPostBody(detailMain.querySelector('.saved-body'), post.content);
+      if (post.tags) {
+        const tags = document.createElement('div');
+        tags.className = 'article-tags';
+        post.tags.split(',').map((tag) => tag.trim()).filter(Boolean).forEach((tag) => {
+          const label = document.createElement('span');
+          label.textContent = `#${tag.replace(/^#/, '')}`;
+          tags.append(label);
+        });
+        detailMain.querySelector('.saved-body').append(tags);
+      }
+    }
+  }
+
   // Blog post search and category filtering
   const searchInput = document.querySelector('#post-search');
   const filterButtons = [...document.querySelectorAll('[data-filter]')];
   const postCards = [...document.querySelectorAll('.post-card')];
   const emptyState = document.querySelector('#empty-state');
   let activeFilter = 'all';
+
+  filterButtons.forEach((button) => {
+    const count = button.dataset.filter === 'all' ? postCards.length
+      : postCards.filter((card) => card.dataset.category === button.dataset.filter).length;
+    const counter = button.querySelector('span');
+    if (counter) counter.textContent = count;
+  });
 
   const filterPosts = () => {
     const query = searchInput?.value.trim().toLocaleLowerCase('ko') || '';
@@ -270,11 +409,15 @@
   const editorTitle = document.querySelector('#editor-title');
   const editorContent = document.querySelector('#editor-content');
   const editorTags = document.querySelector('#editor-tags');
+  const editorCategory = document.querySelector('#editor-category');
+  const editorDate = document.querySelector('#editor-date');
   const titleCount = document.querySelector('#title-count');
   const draftStatus = document.querySelector('.draft-status');
   const publishPanel = document.querySelector('.publish-panel');
   const preview = document.querySelector('.editor-preview');
   const editorPane = document.querySelector('.editor-pane');
+
+  if (editorDate) editorDate.textContent = new Date().toLocaleDateString('ko-KR');
 
   const updateTitle = () => {
     if (titleCount && editorTitle) titleCount.textContent = editorTitle.value.length;
@@ -285,10 +428,15 @@
     if (draftStatus) draftStatus.textContent = text;
   };
   document.querySelector('.save-draft')?.addEventListener('click', () => {
-    localStorage.setItem('haneul-blog-draft', JSON.stringify({
-      title: editorTitle?.value || '', content: editorContent?.value || '', tags: editorTags?.value || ''
-    }));
-    setDraftMessage('방금 저장됨');
+    try {
+      localStorage.setItem('haneul-blog-draft', JSON.stringify({
+        title: editorTitle.value, content: editorContent.value,
+        tags: editorTags.value, category: editorCategory.value
+      }));
+      setDraftMessage('임시저장됨');
+    } catch {
+      setDraftMessage('임시저장에 실패했습니다');
+    }
   });
 
   if (editorTitle) {
@@ -298,6 +446,7 @@
         editorTitle.value = draft.title || '';
         editorContent.value = draft.content || '';
         editorTags.value = draft.tags || '';
+        editorCategory.value = draft.category || '';
         setDraftMessage('임시저장 글');
         updateTitle();
       }
@@ -321,7 +470,7 @@
     editorPane.hidden = !showing;
     if (!showing) {
       preview.querySelector('h1').textContent = editorTitle.value || '제목을 입력하세요';
-      preview.querySelector('.preview-body').textContent = editorContent.value || '내용을 입력하면 이곳에서 미리 볼 수 있습니다.';
+      renderPostBody(preview.querySelector('.preview-body'), editorContent.value || '내용을 입력하면 이곳에서 미리 볼 수 있습니다.');
     }
     event.currentTarget.textContent = showing ? '미리보기' : '편집하기';
   });
@@ -333,12 +482,32 @@
   document.querySelector('.publish-button')?.addEventListener('click', () => togglePublishPanel(true));
   document.querySelector('.panel-close')?.addEventListener('click', () => togglePublishPanel(false));
   document.querySelector('.publish-final')?.addEventListener('click', () => {
-    if (!editorTitle?.value.trim() || !editorContent?.value.trim()) {
+    if (!editorTitle.value.trim() || !editorContent.value.trim()) {
       setDraftMessage('제목과 내용을 입력해 주세요');
       togglePublishPanel(false);
       return;
     }
-    setDraftMessage('발행 완료 (데모)');
-    togglePublishPanel(false);
+    if (!editorCategory.value) {
+      setDraftMessage('카테고리를 선택해 주세요');
+      togglePublishPanel(false);
+      editorCategory.focus();
+      return;
+    }
+    const post = {
+      id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      title: editorTitle.value.trim(),
+      content: editorContent.value.trim(),
+      tags: editorTags.value.trim(),
+      category: editorCategory.value,
+      createdAt: new Date().toISOString()
+    };
+    try {
+      localStorage.setItem(POSTS_KEY, JSON.stringify([post, ...loadPosts()]));
+      localStorage.removeItem('haneul-blog-draft');
+      window.location.href = `post-detail.html?id=${encodeURIComponent(post.id)}`;
+    } catch {
+      setDraftMessage('글 저장에 실패했습니다. 브라우저 저장 공간을 확인해 주세요');
+      togglePublishPanel(false);
+    }
   });
 })();
