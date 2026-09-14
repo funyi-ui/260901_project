@@ -75,6 +75,31 @@
 
   if (year) year.textContent = new Date().getFullYear();
 
+  const AUTH_API_URL = 'https://script.google.com/macros/s/AKfycbxm6pe98CDt_QWSpRkkLNXmP1keEI9umnbYDhJhpPVGzK8F2WwGmEOXpvRvNPlY8DAn5Q/exec';
+  const TOKEN_KEY = 'haneul-auth-token';
+  const authRequest = async (payload) => {
+    const response = await fetch(AUTH_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) throw new Error('서버에 연결할 수 없습니다.');
+    return response.json();
+  };
+  const postsRequest = async (payload) => {
+    const result = await authRequest(payload);
+    if (!result.ok) {
+      const error = new Error(result.message || '글 요청에 실패했습니다.');
+      error.code = result.code;
+      throw error;
+    }
+    return result;
+  };
+  const getAuthToken = () => (
+    sessionStorage.getItem(TOKEN_KEY)
+    || localStorage.getItem(TOKEN_KEY)
+  );
+
   const POSTS_KEY = 'haneul-blog-posts';
   const categoryNames = { development: '개발', design: '디자인', life: '일상' };
   const loadPosts = () => {
@@ -150,9 +175,11 @@
 
   const savedPosts = loadPosts();
   const postGrid = document.querySelector('#post-grid');
-  if (postGrid) {
+  const featured = document.querySelector('#featured-post');
+  const renderListing = (posts) => {
+    if (!postGrid) return;
     postGrid.replaceChildren();
-    savedPosts.forEach((post) => {
+    posts.forEach((post) => {
       const card = document.createElement('article');
       card.className = 'post-card';
       card.dataset.category = categoryNames[post.category] ? post.category : 'life';
@@ -164,6 +191,11 @@
       const label = document.createElement('b');
       label.textContent = categoryNames[post.category] || '새 글';
       thumbnail.append(label);
+      if (post.localOnly) {
+        const localLabel = document.createElement('small');
+        localLabel.textContent = '이 브라우저';
+        thumbnail.append(localLabel);
+      }
       const meta = document.createElement('div');
       meta.className = 'post-meta';
       const category = document.createElement('span');
@@ -182,29 +214,30 @@
       card.append(thumbnail, meta, heading, excerpt);
       postGrid.append(card);
     });
-  }
-
-  const featured = document.querySelector('#featured-post');
-  if (featured && savedPosts.length) {
-    const latest = savedPosts[0];
-    const link = `post-detail.html?id=${encodeURIComponent(latest.id)}`;
-    featured.querySelector('.featured-category').textContent = categoryNames[latest.category] || '일상';
-    const date = featured.querySelector('.featured-date');
-    date.textContent = new Date(latest.updatedAt || latest.createdAt).toLocaleDateString('ko-KR');
-    date.dateTime = latest.updatedAt || latest.createdAt;
-    const title = featured.querySelector('.featured-title');
-    title.textContent = latest.title;
-    title.href = link;
-    featured.querySelector('.featured-excerpt').textContent = latest.content.replace(/[#*>\[\]()]/g, '').replace(/\s+/g, ' ').trim().slice(0, 170);
-    featured.querySelector('.featured-visual').href = link;
-    featured.querySelector('.featured-read').href = link;
-    featured.hidden = false;
-  }
+    if (featured) {
+      featured.hidden = posts.length === 0;
+      if (posts.length) {
+        const latest = posts[0];
+        const link = `post-detail.html?id=${encodeURIComponent(latest.id)}`;
+        featured.querySelector('.featured-category').textContent = categoryNames[latest.category] || '일상';
+        const date = featured.querySelector('.featured-date');
+        date.textContent = new Date(latest.updatedAt || latest.createdAt).toLocaleDateString('ko-KR');
+        date.dateTime = latest.updatedAt || latest.createdAt;
+        const title = featured.querySelector('.featured-title');
+        title.textContent = latest.title;
+        title.href = link;
+        featured.querySelector('.featured-excerpt').textContent = latest.content.replace(/[#*>\[\]()]/g, '').replace(/\s+/g, ' ').trim().slice(0, 170);
+        featured.querySelector('.featured-visual').href = link;
+        featured.querySelector('.featured-read').href = link;
+      }
+    }
+  };
+  renderListing(savedPosts.map((post) => ({ ...post, localOnly: true })));
 
   const postId = new URLSearchParams(window.location.search).get('id');
   const detailMain = document.querySelector('#main');
-  if (detailMain && window.location.pathname.endsWith('post-detail.html')) {
-    const post = savedPosts.find((entry) => entry.id === postId);
+  const renderDetail = (post) => {
+    if (!detailMain) return;
     if (!post) {
       document.title = '글을 찾을 수 없습니다 | HANEUL.LOG';
       detailMain.innerHTML = '<div class="container saved-post-missing"><h1>글을 찾을 수 없습니다.</h1><a href="index.html">← 모든 글</a></div>';
@@ -226,14 +259,35 @@
         detailMain.querySelector('.saved-body').append(tags);
       }
     }
+  };
+  if (detailMain && window.location.pathname.endsWith('post-detail.html')) {
+    const localPost = savedPosts.find((entry) => entry.id === postId);
+    if (localPost || !postId) renderDetail(localPost);
+    else {
+      detailMain.innerHTML = '<div class="container saved-post-missing"><p>글을 불러오는 중입니다...</p></div>';
+      postsRequest({ action: 'posts_get', id: postId })
+        .then((result) => renderDetail(result.post))
+        .catch((error) => {
+          if (error.code === 'POST_NOT_FOUND' || error.code === 'INVALID_ACTION') {
+            renderDetail(null);
+          } else {
+            detailMain.innerHTML = '<div class="container saved-post-missing"><h1>글을 불러오지 못했습니다.</h1><a href="index.html">← 모든 글</a></div>';
+          }
+        });
+    }
   }
 
   const myPostList = document.querySelector('#my-post-list');
   if (myPostList) {
     const emptyMessage = document.querySelector('#my-post-empty');
     const statusMessage = document.querySelector('#my-post-status');
+    let remoteMine = [];
     const renderMyPosts = () => {
-      const posts = loadPosts();
+      const localPosts = loadPosts().filter((post) =>
+        !remoteMine.some((remote) => remote.id === post.id))
+        .map((post) => ({ ...post, localOnly: true }));
+      const posts = [...remoteMine, ...localPosts].sort((left, right) =>
+        String(right.createdAt).localeCompare(String(left.createdAt)));
       myPostList.replaceChildren();
       if (emptyMessage) emptyMessage.hidden = posts.length > 0;
       posts.forEach((post) => {
@@ -247,6 +301,11 @@
         const date = document.createElement('time');
         date.textContent = new Date(post.updatedAt || post.createdAt).toLocaleDateString('ko-KR');
         meta.append(category, date);
+        if (post.localOnly) {
+          const localLabel = document.createElement('span');
+          localLabel.textContent = '이 브라우저';
+          meta.append(localLabel);
+        }
         const heading = document.createElement('h3');
         const title = document.createElement('a');
         title.href = `post-detail.html?id=${encodeURIComponent(post.id)}`;
@@ -267,15 +326,23 @@
         deleteButton.type = 'button';
         deleteButton.className = 'delete-post';
         deleteButton.textContent = '삭제';
-        deleteButton.addEventListener('click', () => {
+        deleteButton.addEventListener('click', async () => {
           if (!window.confirm(`“${post.title}” 글을 삭제할까요?`)) return;
+          deleteButton.disabled = true;
           try {
-            localStorage.setItem(POSTS_KEY, JSON.stringify(loadPosts().filter((entry) => entry.id !== post.id)));
+            if (post.localOnly) {
+              localStorage.setItem(POSTS_KEY, JSON.stringify(loadPosts().filter((entry) => entry.id !== post.id)));
+            } else {
+              await postsRequest({ action: 'posts_delete', id: post.id, token: getAuthToken() });
+              remoteMine = remoteMine.filter((entry) => entry.id !== post.id);
+            }
             localStorage.removeItem(`haneul-blog-edit-draft-${post.id}`);
             renderMyPosts();
             if (statusMessage) statusMessage.textContent = '글을 삭제했습니다.';
-          } catch {
-            if (statusMessage) statusMessage.textContent = '삭제에 실패했습니다. 브라우저 저장 공간을 확인해 주세요.';
+          } catch (error) {
+            if (statusMessage) statusMessage.textContent = error.message || '글 삭제에 실패했습니다.';
+          } finally {
+            deleteButton.disabled = false;
           }
         });
         actions.append(readLink, editLink, deleteButton);
@@ -284,26 +351,40 @@
       });
     };
     renderMyPosts();
+    const token = getAuthToken();
+    if (token) {
+      postsRequest({ action: 'posts_mine', token }).then((result) => {
+        remoteMine = result.posts.map((post) => ({ ...post, localOnly: false }));
+        renderMyPosts();
+      }).catch((error) => {
+        if (error.code !== 'INVALID_ACTION' && statusMessage) {
+          statusMessage.textContent = '서버에 저장된 글을 불러오지 못했습니다.';
+        }
+      });
+    }
   }
 
   // Blog post search and category filtering
   const searchInput = document.querySelector('#post-search');
   const filterButtons = [...document.querySelectorAll('[data-filter]')];
-  const postCards = [...document.querySelectorAll('.post-card')];
   const emptyState = document.querySelector('#empty-state');
   let activeFilter = 'all';
 
-  filterButtons.forEach((button) => {
-    const count = button.dataset.filter === 'all' ? postCards.length
-      : postCards.filter((card) => card.dataset.category === button.dataset.filter).length;
-    const counter = button.querySelector('span');
-    if (counter) counter.textContent = count;
-  });
+  const updateFilterCounts = () => {
+    const cards = [...document.querySelectorAll('.post-card')];
+    filterButtons.forEach((button) => {
+      const count = button.dataset.filter === 'all' ? cards.length
+        : cards.filter((card) => card.dataset.category === button.dataset.filter).length;
+      const counter = button.querySelector('span');
+      if (counter) counter.textContent = count;
+    });
+  };
 
   const filterPosts = () => {
+    const cards = [...document.querySelectorAll('.post-card')];
     const query = searchInput?.value.trim().toLocaleLowerCase('ko') || '';
     let visibleCount = 0;
-    postCards.forEach((card) => {
+    cards.forEach((card) => {
       const matchesCategory = activeFilter === 'all' || card.dataset.category === activeFilter;
       const matchesQuery = card.dataset.search.includes(query);
       card.hidden = !(matchesCategory && matchesQuery);
@@ -311,7 +392,7 @@
     });
     if (emptyState) {
       emptyState.hidden = visibleCount !== 0;
-      emptyState.textContent = postCards.length
+      emptyState.textContent = cards.length
         ? '검색 결과가 없습니다.'
         : '아직 작성한 글이 없습니다. 새 글을 작성해 보세요.';
     }
@@ -323,7 +404,24 @@
     filterButtons.forEach((item) => item.classList.toggle('active', item === button));
     filterPosts();
   }));
-  if (postGrid) filterPosts();
+  if (postGrid) {
+    updateFilterCounts();
+    filterPosts();
+    postsRequest({ action: 'posts_list' }).then((result) => {
+      const remote = result.posts.map((post) => ({ ...post, localOnly: false }));
+      const local = loadPosts().filter((post) => !remote.some((item) => item.id === post.id))
+        .map((post) => ({ ...post, localOnly: true }));
+      const posts = [...remote, ...local].sort((left, right) =>
+        String(right.createdAt).localeCompare(String(left.createdAt)));
+      renderListing(posts);
+      updateFilterCounts();
+      filterPosts();
+    }).catch((error) => {
+      if (error.code !== 'INVALID_ACTION' && emptyState && !savedPosts.length) {
+        emptyState.textContent = '서버 글을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.';
+      }
+    });
+  }
 
   // Prototype forms: validate in the browser and show completion feedback.
   document.querySelectorAll('[data-demo-form]').forEach((form) => {
@@ -335,24 +433,6 @@
       form.reset();
     });
   });
-
-  const AUTH_API_URL = 'https://script.google.com/macros/s/AKfycbwtiglFioGQ8MI2VExRYlS3PMBFtXHbVGGwZlI-Nn-gBdg0Q3o2jC0dTrFMRQ65Hdo5EA/exec';
-  const TOKEN_KEY = 'haneul-auth-token';
-
-  const authRequest = async (payload) => {
-    const response = await fetch(AUTH_API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
-    });
-    if (!response.ok) throw new Error('인증 서버에 연결할 수 없습니다.');
-    return response.json();
-  };
-
-  const getAuthToken = () => (
-    sessionStorage.getItem(TOKEN_KEY)
-    || localStorage.getItem(TOKEN_KEY)
-  );
 
   const saveAuthToken = (token, remember) => {
     sessionStorage.removeItem(TOKEN_KEY);
@@ -499,12 +579,14 @@
   const titleCount = document.querySelector('#title-count');
   const draftStatus = document.querySelector('.draft-status');
   const publishPanel = document.querySelector('.publish-panel');
+  const storageNote = document.querySelector('#storage-note');
   const preview = document.querySelector('.editor-preview');
   const editorPane = document.querySelector('.editor-pane');
   const editId = new URLSearchParams(window.location.search).get('edit');
   const isEditing = editId !== null;
   const draftKey = isEditing ? `haneul-blog-edit-draft-${editId}` : 'haneul-blog-draft';
-  const editingPost = isEditing ? loadPosts().find((post) => post.id === editId) : null;
+  let editingPost = isEditing ? loadPosts().find((post) => post.id === editId) : null;
+  if (editingPost) editingPost = { ...editingPost, localOnly: true };
 
   if (editorDate) editorDate.textContent = new Date().toLocaleDateString('ko-KR');
 
@@ -528,24 +610,15 @@
     }
   });
 
-  if (editorTitle) {
-    if (isEditing && !editingPost) {
-      setDraftMessage('수정할 글을 찾을 수 없습니다. 프로필에서 다시 선택해 주세요.');
-      document.querySelector('.save-draft').disabled = true;
-      document.querySelector('.publish-button').disabled = true;
-      document.querySelector('.publish-final').disabled = true;
-    } else if (editingPost) {
-      editorTitle.value = editingPost.title;
-      editorContent.value = editingPost.content;
-      editorTags.value = editingPost.tags || '';
-      editorCategory.value = editingPost.category || '';
-      document.title = `글 수정 | ${editingPost.title}`;
-      setDraftMessage('글 수정 중');
-      document.querySelector('.publish-button').textContent = '수정 저장';
-      document.querySelector('.publish-final').textContent = '수정 저장하고 글 보기 →';
-    }
+  const setEditorDisabled = (disabled) => {
+    ['.save-draft', '.publish-button', '.publish-final'].forEach((selector) => {
+      const button = document.querySelector(selector);
+      if (button) button.disabled = disabled;
+    });
+  };
+  const restoreDraft = () => {
     try {
-      const draft = isEditing && !editingPost ? null : JSON.parse(localStorage.getItem(draftKey));
+      const draft = JSON.parse(localStorage.getItem(draftKey));
       if (draft) {
         editorTitle.value = draft.title || '';
         editorContent.value = draft.content || '';
@@ -555,6 +628,44 @@
       }
     } catch { localStorage.removeItem(draftKey); }
     updateTitle();
+  };
+  const fillEditorPost = (post) => {
+    editingPost = post;
+    editorTitle.value = post.title;
+    editorContent.value = post.content;
+    editorTags.value = post.tags || '';
+    editorCategory.value = post.category || '';
+    document.title = `글 수정 | ${post.title}`;
+    setDraftMessage('글 수정 중');
+    document.querySelector('.publish-button').textContent = '수정 저장';
+    document.querySelector('.publish-final').textContent = '수정 저장하고 글 보기 →';
+    if (storageNote) storageNote.textContent = post.localOnly
+      ? '수정한 글은 이 브라우저에 저장됩니다.' : '수정한 글은 서버에 저장됩니다.';
+    restoreDraft();
+    setEditorDisabled(false);
+  };
+  if (editorTitle) {
+    if (!isEditing) {
+      restoreDraft();
+      const token = getAuthToken();
+      if (token && storageNote) {
+        postsRequest({ action: 'posts_list' }).then(() => {
+          storageNote.textContent = '글을 저장하면 서버에 저장되어 다른 기기에서도 볼 수 있습니다.';
+        }).catch(() => {});
+      }
+    } else if (editingPost) {
+      fillEditorPost(editingPost);
+    } else {
+      setEditorDisabled(true);
+      setDraftMessage('글을 불러오는 중입니다...');
+      postsRequest({ action: 'posts_get', id: editId }).then((result) => {
+        fillEditorPost({ ...result.post, localOnly: false });
+      }).catch((error) => {
+        setDraftMessage(error.code === 'POST_NOT_FOUND'
+          ? '수정할 글을 찾을 수 없습니다. 프로필에서 다시 선택해 주세요.'
+          : '서버 글을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.');
+      });
+    }
   }
 
   document.querySelectorAll('.editor-toolbar [data-format]').forEach((button) => {
@@ -585,7 +696,7 @@
   };
   document.querySelector('.publish-button')?.addEventListener('click', () => togglePublishPanel(true));
   document.querySelector('.panel-close')?.addEventListener('click', () => togglePublishPanel(false));
-  document.querySelector('.publish-final')?.addEventListener('click', () => {
+  document.querySelector('.publish-final')?.addEventListener('click', async (event) => {
     if (isEditing && !editingPost) return;
     if (!editorTitle.value.trim() || !editorContent.value.trim()) {
       setDraftMessage('제목과 내용을 입력해 주세요');
@@ -598,30 +709,54 @@
       editorCategory.focus();
       return;
     }
-    const posts = loadPosts();
-    const currentPost = isEditing ? posts.find((entry) => entry.id === editId) : null;
-    if (isEditing && !currentPost) {
-      setDraftMessage('글이 삭제되어 수정 내용을 저장할 수 없습니다.');
-      togglePublishPanel(false);
-      return;
-    }
-    const post = {
-      id: isEditing ? editId : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    const fields = {
       title: editorTitle.value.trim(),
       content: editorContent.value.trim(),
       tags: editorTags.value.trim(),
-      category: editorCategory.value,
-      createdAt: currentPost?.createdAt || new Date().toISOString(),
-      ...(isEditing ? { updatedAt: new Date().toISOString() } : {})
+      category: editorCategory.value
     };
+    const button = event.currentTarget;
+    button.disabled = true;
     try {
+      if (isEditing && !editingPost.localOnly) {
+        const result = await postsRequest({
+          action: 'posts_update', id: editId, token: getAuthToken(), ...fields
+        });
+        localStorage.removeItem(draftKey);
+        window.location.href = `post-detail.html?id=${encodeURIComponent(result.post.id)}`;
+        return;
+      }
+      if (!isEditing && getAuthToken()) {
+        try {
+          const result = await postsRequest({
+            action: 'posts_create', token: getAuthToken(), ...fields
+          });
+          localStorage.removeItem(draftKey);
+          window.location.href = `post-detail.html?id=${encodeURIComponent(result.post.id)}`;
+          return;
+        } catch (error) {
+          if (error.code !== 'INVALID_ACTION') throw error;
+        }
+      }
+      const posts = loadPosts();
+      const currentPost = isEditing ? posts.find((entry) => entry.id === editId) : null;
+      if (isEditing && !currentPost) {
+        throw new Error('글이 삭제되어 수정 내용을 저장할 수 없습니다.');
+      }
+      const post = {
+        id: isEditing ? editId : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        ...fields,
+        createdAt: currentPost?.createdAt || new Date().toISOString(),
+        ...(isEditing ? { updatedAt: new Date().toISOString() } : {})
+      };
       const nextPosts = isEditing ? posts.map((entry) => entry.id === editId ? post : entry) : [post, ...posts];
       localStorage.setItem(POSTS_KEY, JSON.stringify(nextPosts));
       localStorage.removeItem(draftKey);
       window.location.href = `post-detail.html?id=${encodeURIComponent(post.id)}`;
-    } catch {
-      setDraftMessage('글 저장에 실패했습니다. 브라우저 저장 공간을 확인해 주세요');
+    } catch (error) {
+      setDraftMessage(error.message || '글 저장에 실패했습니다.');
       togglePublishPanel(false);
+      button.disabled = false;
     }
   });
 })();

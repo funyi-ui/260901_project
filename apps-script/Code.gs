@@ -1,11 +1,12 @@
 /**
- * HANEUL.LOG Google Apps Script authentication API.
+ * HANEUL.LOG Google Apps Script authentication and posts API.
  * Run setupAuth() once, then deploy this project as a web app.
  */
 const AUTH_CONFIG = Object.freeze({
   spreadsheetId: '1yfbZVEL_iVMqkXIQVVgY7e8mmwXg7bm2o1mR1ZvwnXk',
   usersSheet: 'users',
   sessionsSheet: 'sessions',
+  postsSheet: 'posts',
   sessionHours: 24,
   rememberedDays: 30,
   hashRounds: 10000,
@@ -20,6 +21,10 @@ const USER_HEADERS = [
 const SESSION_HEADERS = [
   'sessionId', 'userId', 'tokenHash',
   'createdAt', 'expiresAt', 'revokedAt'
+];
+const POST_HEADERS = [
+  'postId', 'userId', 'title', 'content', 'category', 'tags',
+  'createdAt', 'updatedAt'
 ];
 
 // Run this manually once before deployment.
@@ -57,7 +62,7 @@ function doGet(e) {
   }
   return json_({
     ok: true,
-    service: 'HANEUL.LOG Auth API',
+    service: 'HANEUL.LOG API',
     timestamp: new Date().toISOString()
   });
 }
@@ -75,6 +80,18 @@ function doPost(e) {
         return json_(session_(request));
       case 'logout':
         return json_(logout_(request));
+      case 'posts_list':
+        return json_(postsList_());
+      case 'posts_get':
+        return json_(postsGet_(request));
+      case 'posts_mine':
+        return json_(postsMine_(request));
+      case 'posts_create':
+        return json_(postsCreate_(request));
+      case 'posts_update':
+        return json_(postsUpdate_(request));
+      case 'posts_delete':
+        return json_(postsDelete_(request));
       default:
         throw publicError_('INVALID_ACTION', '지원하지 않는 요청입니다.');
     }
@@ -194,6 +211,150 @@ function logout_(data) {
     }
   }
   return { ok: true, message: '로그아웃되었습니다.' };
+}
+
+function postsList_() {
+  const posts = postRows_().map(function (entry) {
+    return publicPost_(entry.post);
+  });
+  posts.sort(function (left, right) {
+    return right.createdAt.localeCompare(left.createdAt);
+  });
+  return { ok: true, posts: posts };
+}
+
+function postsGet_(data) {
+  const id = requirePostId_(data.id);
+  const entry = postRows_().find(function (item) {
+    return item.post.id === id;
+  });
+  if (!entry) throw publicError_('POST_NOT_FOUND', '글을 찾을 수 없습니다.');
+  return { ok: true, post: publicPost_(entry.post) };
+}
+
+function postsMine_(data) {
+  const user = session_(data).user;
+  const posts = postRows_().filter(function (entry) {
+    return entry.post.ownerId === user.id;
+  }).map(function (entry) {
+    return publicPost_(entry.post);
+  });
+  posts.sort(function (left, right) {
+    return right.createdAt.localeCompare(left.createdAt);
+  });
+  return { ok: true, posts: posts };
+}
+
+function postsCreate_(data) {
+  const user = session_(data).user;
+  const fields = postFields_(data);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const id = Utilities.getUuid();
+    const now = new Date();
+    sheet_(AUTH_CONFIG.postsSheet).appendRow([
+      id, user.id, safeCell_(fields.title), safeCell_(fields.content),
+      fields.category, safeCell_(fields.tags), now, now
+    ]);
+    return { ok: true, post: {
+      id: id, title: fields.title, content: fields.content,
+      category: fields.category, tags: fields.tags,
+      createdAt: now.toISOString(), updatedAt: now.toISOString()
+    } };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function postsUpdate_(data) {
+  const user = session_(data).user;
+  const id = requirePostId_(data.id);
+  const fields = postFields_(data);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const entry = postRows_().find(function (item) {
+      return item.post.id === id && item.post.ownerId === user.id;
+    });
+    if (!entry) throw publicError_('POST_NOT_FOUND', '수정할 글을 찾을 수 없습니다.');
+    const now = new Date();
+    const sheet = sheet_(AUTH_CONFIG.postsSheet);
+    sheet.getRange(entry.rowNumber, 3, 1, 4).setValues([[
+      safeCell_(fields.title), safeCell_(fields.content),
+      fields.category, safeCell_(fields.tags)
+    ]]);
+    sheet.getRange(entry.rowNumber, 8).setValue(now);
+    return { ok: true, post: {
+      id: id, title: fields.title, content: fields.content,
+      category: fields.category, tags: fields.tags,
+      createdAt: entry.post.createdAt, updatedAt: now.toISOString()
+    } };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function postsDelete_(data) {
+  const user = session_(data).user;
+  const id = requirePostId_(data.id);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const entry = postRows_().find(function (item) {
+      return item.post.id === id && item.post.ownerId === user.id;
+    });
+    if (!entry) throw publicError_('POST_NOT_FOUND', '삭제할 글을 찾을 수 없습니다.');
+    sheet_(AUTH_CONFIG.postsSheet).deleteRow(entry.rowNumber);
+    return { ok: true, id: id, message: '글을 삭제했습니다.' };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function postRows_() {
+  const rows = sheet_(AUTH_CONFIG.postsSheet).getDataRange().getValues();
+  const entries = [];
+  for (let index = 1; index < rows.length; index += 1) {
+    if (!rows[index][0]) continue;
+    entries.push({ rowNumber: index + 1, post: {
+      id: String(rows[index][0]), ownerId: String(rows[index][1]),
+      title: String(rows[index][2]), content: String(rows[index][3]),
+      category: String(rows[index][4]), tags: String(rows[index][5]),
+      createdAt: new Date(rows[index][6]).toISOString(),
+      updatedAt: new Date(rows[index][7]).toISOString()
+    } });
+  }
+  return entries;
+}
+
+function publicPost_(post) {
+  return {
+    id: post.id, title: post.title, content: post.content,
+    category: post.category, tags: post.tags,
+    createdAt: post.createdAt, updatedAt: post.updatedAt
+  };
+}
+
+function requirePostId_(value) {
+  const id = String(value || '').trim();
+  if (!id || id.length > 100) {
+    throw publicError_('INVALID_POST_ID', '글 ID가 올바르지 않습니다.');
+  }
+  return id;
+}
+
+function postFields_(data) {
+  const title = String(data.title || '').trim();
+  const content = String(data.content || '').trim();
+  const category = String(data.category || '').trim();
+  const tags = String(data.tags || '').trim();
+  if (!title || title.length > 80 || !content || content.length > 45000
+      || !['development', 'design', 'life'].includes(category)
+      || tags.length > 500) {
+    throw publicError_('INVALID_POST', '글 제목, 본문, 카테고리, 태그를 확인해 주세요.');
+  }
+  return { title: title, content: content, category: category, tags: tags };
 }
 
 function createSession_(user, remember, now) {
@@ -405,6 +566,7 @@ function ensureAuthReady_() {
     const spreadsheet = spreadsheet_();
     ensureSheet_(spreadsheet, AUTH_CONFIG.usersSheet, USER_HEADERS);
     ensureSheet_(spreadsheet, AUTH_CONFIG.sessionsSheet, SESSION_HEADERS);
+    ensureSheet_(spreadsheet, AUTH_CONFIG.postsSheet, POST_HEADERS);
     const properties = PropertiesService.getScriptProperties();
     if (!properties.getProperty('PASSWORD_PEPPER')) {
       properties.setProperty('PASSWORD_PEPPER', randomToken_());
