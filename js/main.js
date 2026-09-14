@@ -77,6 +77,27 @@
 
   const AUTH_API_URL = 'https://script.google.com/macros/s/AKfycbyU-5pr9SeWqOSN7A1hw6m063KfSTmIKETzdjqIBRkjpHPO4gPsPwtRuGT6U8B2oA83KQ/exec';
   const TOKEN_KEY = 'haneul-auth-token';
+  const USER_KEY = 'haneul-auth-user';
+  const VERIFIED_KEY = 'haneul-auth-verified';
+  const REMOTE_POSTS_KEY = 'haneul-remote-posts';
+  const POSTS_CACHE_MS = 60 * 1000;
+  const SESSION_CACHE_MS = 5 * 60 * 1000;
+  const readCache = (key) => {
+    try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch { return null; }
+  };
+  const writeCache = (key, value) => {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* Storage may be full. */ }
+  };
+  const readSessionCache = (key) => {
+    try { return JSON.parse(sessionStorage.getItem(key) || 'null'); } catch { return null; }
+  };
+  const writeSessionCache = (key, value) => {
+    try { sessionStorage.setItem(key, JSON.stringify(value)); } catch { /* Storage may be full. */ }
+  };
+  const cachedRemotePosts = readCache(REMOTE_POSTS_KEY);
+  const getRemotePosts = () => Array.isArray(cachedRemotePosts?.posts) ? cachedRemotePosts.posts : [];
+  const updateRemotePosts = (posts) => writeCache(REMOTE_POSTS_KEY, { posts, savedAt: Date.now() });
+  const invalidateRemotePosts = () => localStorage.removeItem(REMOTE_POSTS_KEY);
   const authRequest = async (payload) => {
     const response = await fetch(AUTH_API_URL, {
       method: 'POST',
@@ -232,7 +253,13 @@
       }
     }
   };
-  renderListing(savedPosts.map((post) => ({ ...post, localOnly: true })));
+  const mergePosts = (remote) => {
+    const local = loadPosts().filter((post) => !remote.some((item) => item.id === post.id))
+      .map((post) => ({ ...post, localOnly: true }));
+    return [...remote, ...local].sort((left, right) =>
+      String(right.createdAt).localeCompare(String(left.createdAt)));
+  };
+  renderListing(mergePosts(getRemotePosts()));
 
   const postId = new URLSearchParams(window.location.search).get('id');
   const detailMain = document.querySelector('#main');
@@ -262,15 +289,17 @@
   };
   if (detailMain && window.location.pathname.endsWith('post-detail.html')) {
     const localPost = savedPosts.find((entry) => entry.id === postId);
+    const cachedPost = getRemotePosts().find((entry) => entry.id === postId);
     if (localPost || !postId) renderDetail(localPost);
     else {
-      detailMain.innerHTML = '<div class="container saved-post-missing"><p>글을 불러오는 중입니다...</p></div>';
+      if (cachedPost) renderDetail(cachedPost);
+      else detailMain.innerHTML = '<div class="container saved-post-missing"><p>글을 불러오는 중입니다...</p></div>';
       postsRequest({ action: 'posts_get', id: postId })
         .then((result) => renderDetail(result.post))
         .catch((error) => {
           if (error.code === 'POST_NOT_FOUND' || error.code === 'INVALID_ACTION') {
             renderDetail(null);
-          } else {
+          } else if (!cachedPost) {
             detailMain.innerHTML = '<div class="container saved-post-missing"><h1>글을 불러오지 못했습니다.</h1><a href="index.html">← 모든 글</a></div>';
           }
         });
@@ -335,6 +364,8 @@
             } else {
               await postsRequest({ action: 'posts_delete', id: post.id, token: getAuthToken() });
               remoteMine = remoteMine.filter((entry) => entry.id !== post.id);
+              invalidateRemotePosts();
+              sessionStorage.removeItem(`haneul-my-posts-${getAuthToken().slice(0, 16)}`);
             }
             localStorage.removeItem(`haneul-blog-edit-draft-${post.id}`);
             renderMyPosts();
@@ -353,10 +384,21 @@
     renderMyPosts();
     const token = getAuthToken();
     if (token) {
+      const cachedMine = readSessionCache(`haneul-my-posts-${token.slice(0, 16)}`);
+      if (cachedMine?.posts) {
+        remoteMine = cachedMine.posts;
+        renderMyPosts();
+      }
       postsRequest({ action: 'posts_mine', token }).then((result) => {
         remoteMine = result.posts.map((post) => ({ ...post, localOnly: false }));
+        writeSessionCache(`haneul-my-posts-${token.slice(0, 16)}`, { posts: remoteMine });
         renderMyPosts();
       }).catch((error) => {
+        if (error.code === 'UNAUTHORIZED') {
+          sessionStorage.removeItem(`haneul-my-posts-${token.slice(0, 16)}`);
+          remoteMine = [];
+          renderMyPosts();
+        }
         if (error.code !== 'INVALID_ACTION' && statusMessage) {
           statusMessage.textContent = '서버에 저장된 글을 불러오지 못했습니다.';
         }
@@ -407,32 +449,19 @@
   if (postGrid) {
     updateFilterCounts();
     filterPosts();
-    postsRequest({ action: 'posts_list' }).then((result) => {
+    const refreshPosts = () => postsRequest({ action: 'posts_list' }).then((result) => {
       const remote = result.posts.map((post) => ({ ...post, localOnly: false }));
-      const local = loadPosts().filter((post) => !remote.some((item) => item.id === post.id))
-        .map((post) => ({ ...post, localOnly: true }));
-      const posts = [...remote, ...local].sort((left, right) =>
-        String(right.createdAt).localeCompare(String(left.createdAt)));
-      renderListing(posts);
+      updateRemotePosts(remote);
+      renderListing(mergePosts(remote));
       updateFilterCounts();
       filterPosts();
     }).catch((error) => {
-      if (error.code !== 'INVALID_ACTION' && emptyState && !savedPosts.length) {
+      if (error.code !== 'INVALID_ACTION' && emptyState && !savedPosts.length && !getRemotePosts().length) {
         emptyState.textContent = '서버 글을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.';
       }
     });
+    if (!cachedRemotePosts || Date.now() - cachedRemotePosts.savedAt > POSTS_CACHE_MS) refreshPosts();
   }
-
-  // Prototype forms: validate in the browser and show completion feedback.
-  document.querySelectorAll('[data-demo-form]').forEach((form) => {
-    form.addEventListener('submit', (event) => {
-      event.preventDefault();
-      if (!form.reportValidity()) return;
-      const message = form.querySelector('.form-message');
-      if (message) message.textContent = '구독 신청이 완료되었습니다. 감사합니다!';
-      form.reset();
-    });
-  });
 
   const saveAuthToken = (token, remember) => {
     sessionStorage.removeItem(TOKEN_KEY);
@@ -442,8 +471,19 @@
   };
 
   const clearAuthToken = () => {
+    const token = getAuthToken();
+    if (token) sessionStorage.removeItem(`haneul-my-posts-${token.slice(0, 16)}`);
     sessionStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(USER_KEY);
+    sessionStorage.removeItem(VERIFIED_KEY);
+  };
+
+  const showProfile = (user) => {
+    const name = document.querySelector('#profile-name');
+    const email = document.querySelector('#profile-email');
+    if (name) name.textContent = user?.name || '내 프로필';
+    if (email) email.textContent = user?.email || '로그인하면 계정 정보를 확인할 수 있습니다.';
   };
 
   const showAuthActions = (isLoggedIn) => {
@@ -489,15 +529,13 @@
 
         if (message) message.textContent = result.message;
         if (isSignup) {
-          window.setTimeout(() => {
-            window.location.href = 'login.html?registered=1';
-          }, 700);
+          window.location.href = 'login.html?registered=1';
         } else {
           saveAuthToken(result.token, remember);
+          if (result.user) writeSessionCache(USER_KEY, result.user);
+          writeSessionCache(VERIFIED_KEY, { token: result.token, checkedAt: Date.now(), expiresAt: result.expiresAt });
           showAuthActions(true);
-          window.setTimeout(() => {
-            window.location.href = 'index.html';
-          }, 500);
+          window.location.href = 'index.html';
         }
       } catch (error) {
         if (message) {
@@ -521,15 +559,29 @@
 
   const refreshAuthUI = async () => {
     const token = getAuthToken();
-    if (!token || !document.querySelector('.header-actions')) return;
+    if (!document.querySelector('.header-actions') && !document.querySelector('#profile-name')) return;
+    if (!token) { showProfile(null); return; }
+    showAuthActions(true);
+    showProfile(readSessionCache(USER_KEY));
+    const verified = readSessionCache(VERIFIED_KEY);
+    if (verified?.token === token && Date.now() - verified.checkedAt < SESSION_CACHE_MS
+      && Date.now() < Date.parse(verified.expiresAt)) return;
 
     try {
       const result = await authRequest({ action: 'session', token });
-      if (!result.ok) throw new Error(result.message);
+      if (!result.ok) {
+        clearAuthToken();
+        showAuthActions(false);
+        showProfile(null);
+        return;
+      }
+      writeSessionCache(USER_KEY, result.user);
+      writeSessionCache(VERIFIED_KEY, { token, checkedAt: Date.now(), expiresAt: result.expiresAt });
       showAuthActions(true);
+      showProfile(result.user);
     } catch {
-      clearAuthToken();
-      showAuthActions(false);
+      // A failed network request does not prove the session is invalid.
+      // Keep the local session until the server confirms expiration.
     }
   };
 
@@ -546,6 +598,7 @@
     } finally {
       clearAuthToken();
       showAuthActions(false);
+      showProfile(null);
       button.disabled = false;
     }
   });
@@ -598,7 +651,9 @@
   const setDraftMessage = (text) => {
     if (draftStatus) draftStatus.textContent = text;
   };
-  document.querySelector('.save-draft')?.addEventListener('click', () => {
+  const saveDraft = () => {
+    clearTimeout(draftTimer);
+    draftTimer = null;
     try {
       localStorage.setItem(draftKey, JSON.stringify({
         title: editorTitle.value, content: editorContent.value,
@@ -608,6 +663,22 @@
     } catch {
       setDraftMessage('임시저장에 실패했습니다');
     }
+  };
+  document.querySelector('.save-draft')?.addEventListener('click', saveDraft);
+  let draftTimer;
+  [editorTitle, editorContent, editorTags, editorCategory].filter(Boolean).forEach((field) => {
+    field.addEventListener('input', () => {
+      setDraftMessage('저장 중...');
+      clearTimeout(draftTimer);
+      draftTimer = window.setTimeout(saveDraft, 700);
+    });
+    field.addEventListener('change', () => {
+      clearTimeout(draftTimer);
+      saveDraft();
+    });
+  });
+  if (editorTitle) window.addEventListener('pagehide', () => {
+    if (draftTimer) saveDraft();
   });
 
   const setEditorDisabled = (disabled) => {
@@ -647,12 +718,7 @@
   if (editorTitle) {
     if (!isEditing) {
       restoreDraft();
-      const token = getAuthToken();
-      if (token && storageNote) {
-        postsRequest({ action: 'posts_list' }).then(() => {
-          storageNote.textContent = '글을 저장하면 서버에 저장되어 다른 기기에서도 볼 수 있습니다.';
-        }).catch(() => {});
-      }
+      if (getAuthToken() && storageNote) storageNote.textContent = '글을 저장하면 서버에 저장되어 다른 기기에서도 볼 수 있습니다.';
     } else if (editingPost) {
       fillEditorPost(editingPost);
     } else {
@@ -722,6 +788,10 @@
         const result = await postsRequest({
           action: 'posts_update', id: editId, token: getAuthToken(), ...fields
         });
+        invalidateRemotePosts();
+        sessionStorage.removeItem(`haneul-my-posts-${getAuthToken().slice(0, 16)}`);
+        clearTimeout(draftTimer);
+        draftTimer = null;
         localStorage.removeItem(draftKey);
         window.location.href = `post-detail.html?id=${encodeURIComponent(result.post.id)}`;
         return;
@@ -731,6 +801,10 @@
           const result = await postsRequest({
             action: 'posts_create', token: getAuthToken(), ...fields
           });
+          invalidateRemotePosts();
+          sessionStorage.removeItem(`haneul-my-posts-${getAuthToken().slice(0, 16)}`);
+          clearTimeout(draftTimer);
+          draftTimer = null;
           localStorage.removeItem(draftKey);
           window.location.href = `post-detail.html?id=${encodeURIComponent(result.post.id)}`;
           return;
@@ -751,6 +825,8 @@
       };
       const nextPosts = isEditing ? posts.map((entry) => entry.id === editId ? post : entry) : [post, ...posts];
       localStorage.setItem(POSTS_KEY, JSON.stringify(nextPosts));
+      clearTimeout(draftTimer);
+      draftTimer = null;
       localStorage.removeItem(draftKey);
       window.location.href = `post-detail.html?id=${encodeURIComponent(post.id)}`;
     } catch (error) {
