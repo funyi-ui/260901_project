@@ -75,7 +75,7 @@
 
   if (year) year.textContent = new Date().getFullYear();
 
-  const AUTH_API_URL = 'https://script.google.com/macros/s/AKfycbxm6pe98CDt_QWSpRkkLNXmP1keEI9umnbYDhJhpPVGzK8F2WwGmEOXpvRvNPlY8DAn5Q/exec';
+  const AUTH_API_URL = 'https://script.google.com/macros/s/AKfycbyU-5pr9SeWqOSN7A1hw6m063KfSTmIKETzdjqIBRkjpHPO4gPsPwtRuGT6U8B2oA83KQ/exec';
   const TOKEN_KEY = 'haneul-auth-token';
   const authRequest = async (payload) => {
     const response = await fetch(AUTH_API_URL, {
